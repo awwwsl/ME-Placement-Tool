@@ -219,6 +219,44 @@ public class UndoHistory
             return aeKey;
         }
     }
+
+    public static class PartPlacementSnapshot extends PlacementSnapshot
+    {
+        public final Direction side;
+        public final AEKey returnKey;
+
+        public PartPlacementSnapshot(BlockPos pos, Direction side, AEKey returnKey) {
+            super(null, pos, ItemStack.EMPTY, null, 1);
+            this.side = side;
+            this.returnKey = returnKey;
+        }
+
+        @Override
+        public boolean canRestore(Level world, Player player) {
+            IPartHost host = PartHelper.getPartHost(world, pos);
+            return host != null && host.getPart(side) != null;
+        }
+
+        @Override
+        public boolean restore(Level world, Player player) {
+            IPartHost host = PartHelper.getPartHost(world, pos);
+            if (host == null || host.getPart(side) == null) {
+                return false;
+            }
+
+            host.removePartFromSide(side);
+            host.markForUpdate();
+            if (host.isEmpty()) {
+                host.cleanup();
+            }
+            return true;
+        }
+
+        @Override
+        public AEKey getReturnKey() {
+            return returnKey;
+        }
+    }
     
     /**
      * Snapshot for cable placements that handles AE2 Part removal.

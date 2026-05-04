@@ -13,13 +13,17 @@ import appeng.api.implementations.menuobjects.ItemMenuHost;
 import appeng.api.networking.IGridNode;
 import appeng.api.networking.security.IActionHost;
 import appeng.api.networking.crafting.ICraftingService;
+import appeng.api.parts.IPartItem;
+import appeng.api.parts.PartHelper;
 import appeng.api.stacks.AEKey;
 import appeng.api.storage.ISubMenuHost;
 import appeng.menu.MenuOpener;
 import appeng.menu.locator.MenuLocators;
 import appeng.menu.me.crafting.CraftAmountMenu;
 import appeng.menu.ISubMenu;
+import appeng.parts.PartPlacement;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerPlayer;
@@ -510,6 +514,135 @@ public class ItemMultiblockPlacementTool extends BasePlacementToolItem implement
         }
 
         var blockItem = target.getItem();
+        if (blockItem instanceof IPartItem<?>) {
+            var firstPlacement = getPartPlacementWithCableFallback(player, level, target, context.getClickedPos(),
+                    context.getClickedFace(), context.getClickLocation());
+            if (firstPlacement == null) {
+                player.displayClientMessage(Component.translatable("message.meplacementtool.cannot_place"), true);
+                return InteractionResult.sidedSuccess(false);
+            }
+
+            BlockPos clickedPos = context.getClickedPos();
+            var clickedState = level.getBlockState(clickedPos);
+            Direction partSide = firstPlacement.side();
+            boolean placingOnClickedHost = firstPlacement.pos().equals(clickedPos);
+
+            java.util.LinkedList<BlockPos> candidates = new java.util.LinkedList<>();
+            java.util.HashSet<BlockPos> allCandidates = new java.util.HashSet<>();
+            java.util.ArrayList<BlockPos> placePositions = new java.util.ArrayList<>();
+            java.util.HashSet<BlockPos> acceptedCandidates = new java.util.HashSet<>();
+
+            candidates.add(firstPlacement.pos());
+            final int MAX_CANDIDATES = placementCount * 10;
+
+            while (!candidates.isEmpty() && placePositions.size() < placementCount && allCandidates.size() < MAX_CANDIDATES) {
+                BlockPos currentCandidate = candidates.removeFirst();
+                if (!allCandidates.add(currentCandidate)) {
+                    continue;
+                }
+
+                boolean supportMatches;
+                if (placingOnClickedHost) {
+                    supportMatches = level.getBlockState(currentCandidate).getBlock() == clickedState.getBlock();
+                } else {
+                    BlockPos supportingPoint = currentCandidate.relative(partSide);
+                    supportMatches = level.getBlockState(supportingPoint).getBlock() == clickedState.getBlock();
+                }
+
+                if (!supportMatches && directionMode != DirectionMode.AUTO
+                        && !hasLockedModeSupport(currentCandidate, acceptedCandidates, directionMode)) {
+                    continue;
+                }
+
+                if (canPlaceConfiguredPartOnCable(player, level, target, currentCandidate, partSide)) {
+                    placePositions.add(currentCandidate);
+                    acceptedCandidates.add(currentCandidate);
+                    addAdjacentPositions(candidates, currentCandidate, context.getClickedFace(), directionMode);
+                }
+            }
+
+            if (placePositions.isEmpty()) {
+                player.displayClientMessage(Component.translatable("message.meplacementtool.cannot_place"), true);
+                return InteractionResult.sidedSuccess(false);
+            }
+
+            int placedCount = 0;
+            List<UndoHistory.PlacementSnapshot> placedSnapshots = new ArrayList<>();
+            java.util.Map<appeng.api.stacks.AEItemKey, Long> extractionMap = new java.util.LinkedHashMap<>();
+            java.util.List<java.util.Map.Entry<appeng.api.stacks.AEItemKey, Long>> availableKeys = new java.util.ArrayList<>();
+            for (var entry : matchingKeys) {
+                availableKeys.add(new java.util.AbstractMap.SimpleEntry<>(entry.getKey(), entry.getValue()));
+            }
+
+            for (BlockPos placePos : placePositions) {
+                appeng.api.stacks.AEItemKey currentKey = null;
+                for (var entry : availableKeys) {
+                    if (entry.getValue() > 0) {
+                        currentKey = entry.getKey();
+                        entry.setValue(entry.getValue() - 1);
+                        break;
+                    }
+                }
+
+                if (currentKey == null) {
+                    break;
+                }
+
+                var placeStack = currentKey.toStack(1);
+                if (!(placeStack.getItem() instanceof IPartItem<?> partItem)) {
+                    continue;
+                }
+
+                if (placePart(player, level, placePos, partSide, partItem, placeStack)) {
+                    placedCount++;
+                    placedSnapshots.add(new UndoHistory.PartPlacementSnapshot(placePos, partSide, currentKey));
+                    extractionMap.merge(currentKey, 1L, Long::sum);
+                }
+            }
+
+            if (placedCount == 0) {
+                player.displayClientMessage(Component.translatable("message.meplacementtool.cannot_place"), true);
+                return InteractionResult.sidedSuccess(false);
+            }
+
+            long totalExtracted = 0;
+            for (var entry : extractionMap.entrySet()) {
+                long extracted = storage.extract(entry.getKey(), entry.getValue(), appeng.api.config.Actionable.MODULATE, src);
+                totalExtracted += extracted;
+            }
+
+            if (totalExtracted <= 0) {
+                player.displayClientMessage(Component.translatable("message.meplacementtool.cannot_place"), true);
+                return InteractionResult.sidedSuccess(false);
+            }
+
+            boolean configApplied = false;
+            if (MemoryCardHelper.hasConfiguredMemoryCard(player)) {
+                boolean firstPart = true;
+                for (UndoHistory.PlacementSnapshot snapshot : placedSnapshots) {
+                    var host = appeng.api.parts.PartHelper.getPartHost(level, snapshot.pos);
+                    if (host != null && MemoryCardHelper.applyMemoryCardToPart(player, host.getPart(partSide), firstPart, grid)) {
+                        configApplied = true;
+                    }
+                    firstPart = false;
+                }
+            }
+
+            MEPlacementToolMod.instance.undoHistory.add(player, level, placedSnapshots, configApplied);
+
+            LOGGER.info("Consuming {} AE from wand for player {} (placedCount={})", ENERGY_COST * placedCount / placementCount, player.getName().getString(), placedCount);
+            this.usePower(player, ENERGY_COST * placedCount / placementCount, wand);
+            if (!placedSnapshots.isEmpty()) {
+                BlockPos soundPos = placedSnapshots.get(0).pos;
+                var placedState = level.getBlockState(soundPos);
+                var soundType = placedState.getSoundType(level, soundPos, player);
+                level.playSound(null, soundPos, soundType.getPlaceSound(), SoundSource.BLOCKS,
+                    (soundType.getVolume() + 1.0F) / 2.0F, soundType.getPitch() * 0.8F);
+            }
+
+            return InteractionResult.sidedSuccess(false);
+        }
+
         if (!(blockItem instanceof BlockItem)) {
             player.displayClientMessage(Component.translatable("message.meplacementtool.unsupported_target"), true);
             return InteractionResult.FAIL;
@@ -697,6 +830,45 @@ public class ItemMultiblockPlacementTool extends BasePlacementToolItem implement
         }
 
         return InteractionResult.sidedSuccess(false);
+    }
+
+    private boolean canPlaceConfiguredPartOnCable(Player player, Level level, ItemStack partStack, BlockPos pos,
+            Direction side) {
+        if (side != null && !hasCenterCable(level, pos)) {
+            return false;
+        }
+        return PartPlacement.canPlacePartOnBlock(player, level, partStack, pos, side);
+    }
+
+    private boolean hasCenterCable(Level level, BlockPos pos) {
+        var host = PartHelper.getPartHost(level, pos);
+        return host != null && host.getPart(null) != null;
+    }
+
+    private PartPlacement.Placement getPartPlacementWithCableFallback(Player player, Level level, ItemStack partStack,
+            BlockPos clickedPos, Direction clickedFace, net.minecraft.world.phys.Vec3 clickLocation) {
+        var placement = PartPlacement.getPartPlacement(player, level, partStack, clickedPos, clickedFace, clickLocation);
+        if (placement != null) {
+            return placement;
+        }
+
+        var host = PartHelper.getPartHost(level, clickedPos);
+        if (host != null && host.getPart(null) != null && host.canAddPart(partStack, clickedFace)) {
+            return new PartPlacement.Placement(clickedPos, clickedFace);
+        }
+
+        return null;
+    }
+
+    @SuppressWarnings({ "unchecked", "rawtypes" })
+    private boolean placePart(Player player, Level level, BlockPos pos, Direction side, IPartItem<?> partItem,
+            ItemStack partStack) {
+        try {
+            return PartPlacement.placePart(player, level, (IPartItem) partItem, partStack.getTag(), pos, side) != null;
+        } catch (Throwable t) {
+            LOGGER.warn("Exception during part placement attempt for player {} at {}", player.getName().getString(), pos, t);
+            return false;
+        }
     }
 
     private void addAdjacentPositions(java.util.LinkedList<BlockPos> candidates, BlockPos pos,
