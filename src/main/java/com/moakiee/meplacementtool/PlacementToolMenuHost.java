@@ -21,8 +21,6 @@ import appeng.api.storage.ISubMenuHost;
 import appeng.api.storage.MEStorage;
 import appeng.api.util.IConfigManager;
 import appeng.blockentity.networking.WirelessAccessPointBlockEntity;
-import appeng.core.AEConfig;
-import appeng.core.localization.PlayerMessages;
 import appeng.menu.ISubMenu;
 import appeng.util.ConfigManager;
 
@@ -39,10 +37,6 @@ public class PlacementToolMenuHost extends ItemMenuHost implements IPortableTerm
     private IStorageService sg;
     @Nullable
     private IWirelessAccessPoint myWap;
-    /**
-     * The distance to the currently connected access point in blocks.
-     */
-    private double currentDistanceFromGrid = Double.MAX_VALUE;
 
     public PlacementToolMenuHost(Player player, @Nullable Integer slot, ItemStack itemStack,
             BiConsumer<Player, ISubMenu> returnToMainMenu) {
@@ -98,53 +92,18 @@ public class PlacementToolMenuHost extends ItemMenuHost implements IPortableTerm
     }
 
     public boolean rangeCheck() {
-        this.currentDistanceFromGrid = Double.MAX_VALUE;
-
         if (this.targetGrid != null) {
-            @Nullable
-            IWirelessAccessPoint bestWap = null;
-            double bestSqDistance = Double.MAX_VALUE;
-
-            // Find closest WAP
+            // Find any active WAP, no range or dimension limit
             for (var wap : this.targetGrid.getMachines(WirelessAccessPointBlockEntity.class)) {
-                double sqDistance = getWapSqDistance(wap);
-
-                // If the WAP is not suitable then MAX_VALUE will be returned and the check will fail
-                if (sqDistance < bestSqDistance) {
-                    bestSqDistance = sqDistance;
-                    bestWap = wap;
+                if (wap.isActive()) {
+                    this.myWap = wap;
+                    return true;
                 }
             }
-
-            // If no WAP is found this will work too
-            this.myWap = bestWap;
-            this.currentDistanceFromGrid = Math.sqrt(bestSqDistance);
-            return this.myWap != null;
+            this.myWap = null;
         }
 
         return false;
-    }
-
-    /**
-     * @return square distance to WAP if the WAP can be used, or {@link Double#MAX_VALUE} if it cannot be used.
-     * Note: For placement tools, we ignore range and dimension limits - only check if WAP is active.
-     */
-    protected double getWapSqDistance(IWirelessAccessPoint wap) {
-        // For placement tools, allow cross-dimension access - only check if WAP is active
-        if (wap.isActive()) {
-            var dc = wap.getLocation();
-            if (dc.getLevel() == this.getPlayer().level()) {
-                // Same dimension - return actual distance
-                var offX = dc.getPos().getX() - this.getPlayer().getX();
-                var offY = dc.getPos().getY() - this.getPlayer().getY();
-                var offZ = dc.getPos().getZ() - this.getPlayer().getZ();
-                return offX * offX + offY * offY + offZ * offZ;
-            } else {
-                // Different dimension - return a large but valid distance
-                return 1.0;
-            }
-        }
-        return Double.MAX_VALUE;
     }
 
     @Override
@@ -153,21 +112,6 @@ public class PlacementToolMenuHost extends ItemMenuHost implements IPortableTerm
         // power drain. The tool only consumes power when actually placing blocks.
         // This allows crafting menus to stay open regardless of WAP range.
         return ensureItemStillInSlot();
-    }
-
-    /**
-     * Check wireless range for the placement tool.
-     */
-    private boolean checkWirelessRange(AbstractContainerMenu menu) {
-        if (!rangeCheck()) {
-            if (!isClientSide()) {
-                getPlayer().displayClientMessage(PlayerMessages.OutOfRange.text(), true);
-            }
-            return false;
-        }
-
-        setPowerDrainPerTick(AEConfig.instance().wireless_getDrainRate(currentDistanceFromGrid));
-        return true;
     }
 
     @Override
