@@ -5,9 +5,10 @@ import com.moakiee.meplacementtool.ItemMultiblockPlacementTool.DirectionMode;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashSet;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Set;
 
@@ -50,7 +51,7 @@ public final class PlacementBfs {
 
         if (maxCount <= 0) return new ArrayList<>();
 
-        LinkedList<BlockPos> candidates = new LinkedList<>();
+        Deque<BlockPos> candidates = new ArrayDeque<>();
         Set<BlockPos> allCandidates = new HashSet<>();
         List<BlockPos> placePositions = new ArrayList<>();
         Set<BlockPos> acceptedPositions = new HashSet<>();
@@ -95,7 +96,7 @@ public final class PlacementBfs {
         }
     }
 
-    public static void addAdjacentPositions(LinkedList<BlockPos> candidates, BlockPos pos,
+    public static void addAdjacentPositions(Deque<BlockPos> candidates, BlockPos pos,
             Direction face, DirectionMode directionMode) {
         switch (directionMode) {
             case NORTH_SOUTH:
@@ -117,7 +118,7 @@ public final class PlacementBfs {
         }
     }
 
-    public static void addAutoAdjacentPositions(LinkedList<BlockPos> candidates, BlockPos pos, Direction face) {
+    public static void addAutoAdjacentPositions(Deque<BlockPos> candidates, BlockPos pos, Direction face) {
         switch (face) {
             case DOWN:
             case UP:
